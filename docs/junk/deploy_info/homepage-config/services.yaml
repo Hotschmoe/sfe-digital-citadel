@@ -1,0 +1,96 @@
+---
+- name: Media
+  icon: mdi-play-circle
+  services:
+    - name: Jellyfin
+      icon: jellyfin
+      href: https://media.${DOMAIN}
+      description: Media streaming server
+    - name: Sonarr
+      icon: sonarr
+      href: https://tv.${DOMAIN}
+      description: TV show management
+    - name: Radarr
+      icon: radarr
+      href: https://movies.${DOMAIN}
+      description: Movie management
+    - name: Lidarr
+      icon: lidarr
+      href: https://music.${DOMAIN}
+      description: Music management
+
+- name: Storage
+  icon: mdi-folder-multiple
+  services:
+    - name: Nextcloud
+      icon: nextcloud
+      href: https://cloud.${DOMAIN}
+      description: File storage and sharing
+    - name: Calibre
+      icon: mdi-book-open-page-variant
+      href: https://library.${DOMAIN}
+      description: E-book library
+
+- name: Security
+  icon: mdi-shield-lock
+  services:
+    - name: Vaultwarden
+      icon: mdi-shield-key
+      href: https://vault.${DOMAIN}
+      description: Password manager
+    - name: WireGuard
+      icon: vpn
+      href: https://vpn.${DOMAIN}
+      description: VPN service
+
+- name: Learning
+  icon: mdi-school
+  services:
+    - name: Moodle
+      icon: mdi-book-education
+      href: https://learn.${DOMAIN}
+      description: Learning management system
+    - name: JupyterHub
+      icon: jupyter
+      href: https://jupyter.${DOMAIN}
+      description: Interactive computing
+    - name: Wiki
+      icon: mdi-book-open
+      href: https://wiki.${DOMAIN}
+      description: Documentation and knowledge base
+
+- name: Productivity
+  icon: mdi-briefcase
+  services:
+    - name: Gitea
+      icon: git
+      href: https://git.${DOMAIN}
+      description: Git repository hosting
+    - name: Firefly III
+      icon: mdi-currency-usd
+      href: https://money.${DOMAIN}
+      description: Personal finance manager
+    - name: Calendar
+      icon: mdi-calendar
+      href: https://calendar.${DOMAIN}
+      description: Calendar and contacts
+
+- name: System
+  icon: mdi-cog
+  services:
+    - name: Uptime Kuma
+      icon: uptime-kuma
+      href: https://status.${DOMAIN}
+      description: Service monitoring
+    - name: Grafana
+      icon: grafana
+      href: https://monitor.${DOMAIN}
+      description: System metrics
+    - name: Pi-hole
+      icon: pi-hole
+      href: https://dns.${DOMAIN}
+      description: Network-wide ad blocking
+    - name: Duplicati
+      icon: mdi-backup-restore
+      href: https://backup.${DOMAIN}
+      description: Backup solution 

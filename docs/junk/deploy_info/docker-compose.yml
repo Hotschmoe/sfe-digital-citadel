@@ -1,0 +1,711 @@
+version: '3.8'
+
+services:
+  # Reverse Proxy & SSL
+  traefik:
+    image: traefik:v2.10
+    command:
+      - "--api.insecure=false"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.email=${TRAEFIK_ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--accesslog=true"
+      - "--accesslog.filepath=/var/log/traefik/access.log"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-acme:/acme.json
+      - traefik-logs:/var/log/traefik
+    networks:
+      - proxy
+    restart: unless-stopped
+
+  # File Sharing & Sync
+  nextcloud:
+    image: nextcloud:latest
+    volumes:
+      - ${DOCUMENTS_PATH}:/var/www/html/data
+    environment:
+      - POSTGRES_HOST=nextcloud-db
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - NEXTCLOUD_ADMIN_USER=${NEXTCLOUD_ADMIN_USER}
+      - NEXTCLOUD_ADMIN_PASSWORD=${NEXTCLOUD_ADMIN_PASSWORD}
+    networks:
+      - proxy
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nextcloud.rule=Host(`cloud.${DOMAIN}`)"
+      - "traefik.http.routers.nextcloud.entrypoints=websecure"
+      - "traefik.http.routers.nextcloud.tls.certresolver=letsencrypt"
+    depends_on:
+      - nextcloud-db
+    restart: unless-stopped
+
+  nextcloud-db:
+    image: postgres:15-alpine
+    volumes:
+      - nextcloud-db:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # Chat Platform
+  matrix-synapse:
+    image: matrixdotorg/synapse:latest
+    volumes:
+      - matrix-data:/data
+    environment:
+      - SYNAPSE_SERVER_NAME=${MATRIX_SERVER_NAME}
+      - SYNAPSE_REPORT_STATS=${MATRIX_REPORT_STATS}
+    networks:
+      - proxy
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.matrix.rule=Host(`matrix.${DOMAIN}`)"
+      - "traefik.http.routers.matrix.entrypoints=websecure"
+      - "traefik.http.routers.matrix.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Password Management
+  vaultwarden:
+    image: vaultwarden/server:latest
+    volumes:
+      - vaultwarden-data:/data
+    environment:
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_FROM=${SMTP_FROM}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_SSL=${SMTP_SSL}
+      - SMTP_USERNAME=${SMTP_USERNAME}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - DOMAIN=https://vault.${DOMAIN}
+      - ADMIN_TOKEN=${ADMIN_PASSWORD}
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.vaultwarden.rule=Host(`vault.${DOMAIN}`)"
+      - "traefik.http.routers.vaultwarden.entrypoints=websecure"
+      - "traefik.http.routers.vaultwarden.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Media Server
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    volumes:
+      - ${MEDIA_PATH}:/media
+      - ${JELLYFIN_CACHE}:/cache
+    devices:
+      - /dev/dri:/dev/dri # Hardware transcoding (if available)
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jellyfin.rule=Host(`media.${DOMAIN}`)"
+      - "traefik.http.routers.jellyfin.entrypoints=websecure"
+      - "traefik.http.routers.jellyfin.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # VPN Service
+  wireguard:
+    image: linuxserver/wireguard:latest
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - SERVERURL=vpn.${DOMAIN}
+      - SERVERPORT=51820
+      - PEERS=${WIREGUARD_PEERS}
+      - INTERNAL_SUBNET=${WIREGUARD_SERVER_IP}
+    volumes:
+      - wireguard-data:/config
+    ports:
+      - "51820:51820/udp"
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    restart: unless-stopped
+
+  # Gaming
+  minecraft:
+    image: itzg/minecraft-server:latest
+    environment:
+      - EULA=TRUE
+      - MEMORY=${MINECRAFT_MEMORY}
+      - JAVA_OPTS=${MINECRAFT_JAVA_OPTS}
+    volumes:
+      - minecraft-data:/data
+    ports:
+      - "25565:25565"
+    restart: unless-stopped
+
+  # Network Security
+  pihole:
+    image: pihole/pihole:latest
+    environment:
+      - TZ=UTC
+      - WEBPASSWORD=${ADMIN_PASSWORD}
+    volumes:
+      - pihole-data:/etc/pihole
+      - pihole-dnsmasq:/etc/dnsmasq.d
+    networks:
+      - proxy
+    dns:
+      - 127.0.0.1
+      - 1.1.1.1
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pihole.rule=Host(`dns.${DOMAIN}`)"
+      - "traefik.http.routers.pihole.entrypoints=websecure"
+      - "traefik.http.routers.pihole.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Monitoring
+  grafana:
+    image: grafana/grafana:latest
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    networks:
+      - proxy
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`monitor.${DOMAIN}`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - prometheus-data:/prometheus
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # Documentation Wiki
+  wikijs:
+    image: requarks/wiki:2
+    environment:
+      DB_TYPE: postgres
+      DB_HOST: wiki-db
+      DB_PORT: 5432
+      DB_USER: ${WIKI_DB_USER}
+      DB_PASS: ${WIKI_DB_PASSWORD}
+      DB_NAME: ${WIKI_DB_NAME}
+    volumes:
+      - wikijs-data:/data
+    networks:
+      - proxy
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.wiki.rule=Host(`wiki.${DOMAIN}`)"
+      - "traefik.http.routers.wiki.entrypoints=websecure"
+      - "traefik.http.routers.wiki.tls.certresolver=letsencrypt"
+    depends_on:
+      - wiki-db
+    restart: unless-stopped
+
+  wiki-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${WIKI_DB_NAME}
+      POSTGRES_USER: ${WIKI_DB_USER}
+      POSTGRES_PASSWORD: ${WIKI_DB_PASSWORD}
+    volumes:
+      - wiki-db:/var/lib/postgresql/data
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # Digital Library
+  calibre-web:
+    image: linuxserver/calibre-web:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - ${BOOKS_PATH}:/books
+      - calibre-config:/config
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.calibre.rule=Host(`library.${DOMAIN}`)"
+      - "traefik.http.routers.calibre.entrypoints=websecure"
+      - "traefik.http.routers.calibre.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Home Automation
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    volumes:
+      - homeassistant-config:/config
+      - /etc/localtime:/etc/localtime:ro
+    network_mode: host
+    privileged: true
+    restart: unless-stopped
+
+  # Network Monitoring
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    volumes:
+      - uptime-kuma:/app/data
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.uptime.rule=Host(`status.${DOMAIN}`)"
+      - "traefik.http.routers.uptime.entrypoints=websecure"
+      - "traefik.http.routers.uptime.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Backup Solution
+  duplicati:
+    image: ghcr.io/linuxserver/duplicati:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - duplicati-config:/config
+      - ${BACKUP_PATH}:/backups
+      - ${DOCUMENTS_PATH}:/source/documents:ro
+      - ${MEDIA_PATH}:/source/media:ro
+      - ${PHOTOS_PATH}:/source/photos:ro
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.duplicati.rule=Host(`backup.${DOMAIN}`)"
+      - "traefik.http.routers.duplicati.entrypoints=websecure"
+      - "traefik.http.routers.duplicati.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Family Calendar & Contacts
+  radicale:
+    image: tomsquest/docker-radicale
+    volumes:
+      - radicale-data:/data
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.radicale.rule=Host(`calendar.${DOMAIN}`)"
+      - "traefik.http.routers.radicale.entrypoints=websecure"
+      - "traefik.http.routers.radicale.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Learning Management System
+  moodle:
+    image: bitnami/moodle:latest
+    environment:
+      - MOODLE_DATABASE_HOST=moodle-db
+      - MOODLE_DATABASE_PORT_NUMBER=5432
+      - MOODLE_DATABASE_USER=${MOODLE_DB_USER}
+      - MOODLE_DATABASE_PASSWORD=${MOODLE_DB_PASSWORD}
+      - MOODLE_DATABASE_NAME=${MOODLE_DB_NAME}
+      - MOODLE_USERNAME=${MOODLE_ADMIN_USER}
+      - MOODLE_PASSWORD=${MOODLE_ADMIN_PASSWORD}
+    volumes:
+      - moodle-data:/bitnami/moodle
+      - moodle-data-persistence:/bitnami/moodledata
+    networks:
+      - proxy
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.moodle.rule=Host(`learn.${DOMAIN}`)"
+      - "traefik.http.routers.moodle.entrypoints=websecure"
+      - "traefik.http.routers.moodle.tls.certresolver=letsencrypt"
+    depends_on:
+      - moodle-db
+    restart: unless-stopped
+
+  moodle-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=${MOODLE_DB_NAME}
+      - POSTGRES_USER=${MOODLE_DB_USER}
+      - POSTGRES_PASSWORD=${MOODLE_DB_PASSWORD}
+    volumes:
+      - moodle-db:/var/lib/postgresql/data
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # Jupyter Hub
+  jupyterhub:
+    image: jupyterhub/jupyterhub:latest
+    volumes:
+      - jupyter-data:/data
+      - ${DOCUMENTS_PATH}/jupyter:/home/jovyan/work
+    environment:
+      - JUPYTER_ADMIN_USER=${JUPYTER_ADMIN_USER}
+      - JUPYTER_ADMIN_PASS=${JUPYTER_ADMIN_PASS}
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jupyter.rule=Host(`jupyter.${DOMAIN}`)"
+      - "traefik.http.routers.jupyter.entrypoints=websecure"
+      - "traefik.http.routers.jupyter.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Steam Cache
+  lancache:
+    image: lancachenet/monolithic:latest
+    environment:
+      - CACHE_MEM_SIZE=1000m
+      - UPSTREAM_DNS=8.8.8.8
+    volumes:
+      - ${CACHE_PATH}/steam:/data/cache
+    networks:
+      - proxy
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    restart: unless-stopped
+
+  # Version Control & Project Management
+  gitea:
+    image: gitea/gitea:latest
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__database__DB_TYPE=postgres
+      - GITEA__database__HOST=gitea-db:5432
+      - GITEA__database__NAME=${GITEA_DB_NAME}
+      - GITEA__database__USER=${GITEA_DB_USER}
+      - GITEA__database__PASSWD=${GITEA_DB_PASSWORD}
+    volumes:
+      - gitea-data:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - proxy
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.gitea.rule=Host(`git.${DOMAIN}`)"
+      - "traefik.http.routers.gitea.entrypoints=websecure"
+      - "traefik.http.routers.gitea.tls.certresolver=letsencrypt"
+    depends_on:
+      - gitea-db
+    restart: unless-stopped
+
+  gitea-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=${GITEA_DB_NAME}
+      - POSTGRES_USER=${GITEA_DB_USER}
+      - POSTGRES_PASSWORD=${GITEA_DB_PASSWORD}
+    volumes:
+      - gitea-db:/var/lib/postgresql/data
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # GitHub Backup (runs periodically to backup repositories)
+  github-backup:
+    image: ghcr.io/josegonzalez/github-backup:latest
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_USER=${GITHUB_USER}
+    volumes:
+      - ${BACKUP_PATH}/github:/backup
+    command: ["--organization", "--repository", "--fork", "--private", "--all"]
+    restart: unless-stopped
+
+  # Financial Management
+  firefly:
+    image: fireflyiii/core:latest
+    environment:
+      - DB_HOST=firefly-db
+      - DB_PORT=5432
+      - DB_CONNECTION=pgsql
+      - DB_DATABASE=${FIREFLY_DB_NAME}
+      - DB_USERNAME=${FIREFLY_DB_USER}
+      - DB_PASSWORD=${FIREFLY_DB_PASSWORD}
+      - APP_KEY=${FIREFLY_APP_KEY}
+      - TRUSTED_PROXIES=**
+    volumes:
+      - firefly-upload:/var/www/html/storage/upload
+    networks:
+      - proxy
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.firefly.rule=Host(`money.${DOMAIN}`)"
+      - "traefik.http.routers.firefly.entrypoints=websecure"
+      - "traefik.http.routers.firefly.tls.certresolver=letsencrypt"
+    depends_on:
+      - firefly-db
+    restart: unless-stopped
+
+  firefly-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=${FIREFLY_DB_NAME}
+      - POSTGRES_USER=${FIREFLY_DB_USER}
+      - POSTGRES_PASSWORD=${FIREFLY_DB_PASSWORD}
+    volumes:
+      - firefly-db:/var/lib/postgresql/data
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # Media Management
+  transmission-vpn:
+    image: haugene/transmission-openvpn
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - OPENVPN_PROVIDER=${VPN_PROVIDER}
+      - OPENVPN_USERNAME=${VPN_USERNAME}
+      - OPENVPN_PASSWORD=${VPN_PASSWORD}
+      - LOCAL_NETWORK=192.168.0.0/16
+    volumes:
+      - ${MEDIA_PATH}/downloads:/downloads
+      - transmission-config:/config
+    networks:
+      - proxy
+    ports:
+      - "9091:9091"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.transmission.rule=Host(`torrent.${DOMAIN}`)"
+      - "traefik.http.routers.transmission.entrypoints=websecure"
+      - "traefik.http.routers.transmission.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  jackett:
+    image: linuxserver/jackett:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - jackett-config:/config
+      - ${MEDIA_PATH}/downloads:/downloads
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jackett.rule=Host(`jackett.${DOMAIN}`)"
+      - "traefik.http.routers.jackett.entrypoints=websecure"
+      - "traefik.http.routers.jackett.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  sonarr:
+    image: linuxserver/sonarr:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - sonarr-config:/config
+      - ${MEDIA_PATH}:/media
+      - ${MEDIA_PATH}/downloads:/downloads
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.sonarr.rule=Host(`tv.${DOMAIN}`)"
+      - "traefik.http.routers.sonarr.entrypoints=websecure"
+      - "traefik.http.routers.sonarr.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  radarr:
+    image: linuxserver/radarr:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - radarr-config:/config
+      - ${MEDIA_PATH}:/media
+      - ${MEDIA_PATH}/downloads:/downloads
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.radarr.rule=Host(`movies.${DOMAIN}`)"
+      - "traefik.http.routers.radarr.entrypoints=websecure"
+      - "traefik.http.routers.radarr.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  lidarr:
+    image: linuxserver/lidarr:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - lidarr-config:/config
+      - ${MEDIA_PATH}:/media
+      - ${MEDIA_PATH}/downloads:/downloads
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.lidarr.rule=Host(`music.${DOMAIN}`)"
+      - "traefik.http.routers.lidarr.entrypoints=websecure"
+      - "traefik.http.routers.lidarr.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  overseerr:
+    image: linuxserver/overseerr:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - overseerr-config:/config
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.overseerr.rule=Host(`request.${DOMAIN}`)"
+      - "traefik.http.routers.overseerr.entrypoints=websecure"
+      - "traefik.http.routers.overseerr.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  prowlarr:
+    image: linuxserver/prowlarr:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - prowlarr-config:/config
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prowlarr.rule=Host(`search.${DOMAIN}`)"
+      - "traefik.http.routers.prowlarr.entrypoints=websecure"
+      - "traefik.http.routers.prowlarr.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  bazarr:
+    image: linuxserver/bazarr:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - bazarr-config:/config
+      - ${MEDIA_PATH}:/media
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bazarr.rule=Host(`subs.${DOMAIN}`)"
+      - "traefik.http.routers.bazarr.entrypoints=websecure"
+      - "traefik.http.routers.bazarr.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # Homepage Dashboard
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: homepage
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - homepage-config:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./homepage-config:/app/config/custom
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.homepage.rule=Host(`home.${DOMAIN}`)"
+      - "traefik.http.routers.homepage.entrypoints=websecure"
+      - "traefik.http.routers.homepage.tls.certresolver=letsencrypt"
+    restart: unless-stopped
+
+  # CI/CD Pipeline
+  # TODO: Add Jenkins/GitLab CI when needed
+  # Consider using Drone CI for lightweight CI/CD
+  # Example configuration would include:
+  # - Drone Server
+  # - Drone Runner
+  # - Integration with Gitea
+  # - Artifact storage
+  # - Deployment automation
+
+  # Network Security
+  fail2ban:
+    image: crazymax/fail2ban:latest
+    container_name: fail2ban
+    network_mode: "host"  # Required to directly modify host iptables
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./fail2ban:/data
+      - traefik-logs:/var/log/traefik:ro
+    environment:
+      - TZ=UTC
+      - F2B_LOG_TARGET=STDOUT
+      - F2B_LOG_LEVEL=INFO
+      - F2B_DB_PURGE_AGE=7d
+    restart: unless-stopped
+
+volumes:
+  traefik-acme:
+  nextcloud-db:
+  matrix-data:
+  vaultwarden-data:
+  wireguard-data:
+  minecraft-data:
+  pihole-data:
+  pihole-dnsmasq:
+  grafana-data:
+  prometheus-data:
+  wikijs-data:
+  wiki-db:
+  calibre-config:
+  homeassistant-config:
+  uptime-kuma:
+  duplicati-config:
+  radicale-data:
+  moodle-data:
+  moodle-data-persistence:
+  moodle-db:
+  jupyter-data:
+  gitea-data:
+  gitea-db:
+  firefly-db:
+  firefly-upload:
+  transmission-config:
+  jackett-config:
+  sonarr-config:
+  radarr-config:
+  lidarr-config:
+  overseerr-config:
+  prowlarr-config:
+  bazarr-config:
+  homepage-config:
+  traefik-logs:
+
+networks:
+  proxy:
+    driver: overlay
+  internal:
+    driver: overlay
+    internal: true

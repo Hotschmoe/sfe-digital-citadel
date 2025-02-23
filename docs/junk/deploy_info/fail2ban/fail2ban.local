@@ -1,0 +1,10 @@
+[Definition]
+logtarget = STDOUT
+loglevel = INFO
+dbpurgeage = 7d
+
+[DEFAULT]
+banaction = iptables-allports
+findtime = 10m
+bantime = 1h
+maxretry = 5 
